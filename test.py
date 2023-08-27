@@ -19,119 +19,117 @@ class TileWorld:
         [0, 1, 0]]
     So for d T / d t = (const) * nabla^2 T
         dT = timestep * const * nabla^2 T
+        
+        
     
     """
-    def __init__(self, width=100,height=100):
+    def __init__(self, width=50,height=50):
         self.width = width
         self.height = height
         
-        #Concentrations P and S
-        # Initialize P from random pixels
-        # self.P_concentrations  = np.random.uniform(0,0.5,width*height).reshape((width, height))
-        self.P_concentrations = np.zeros((width, height), dtype=float)
+        self.cell_size = 0.5
+        self.timestep = 0.05
         
+        self.F = 0.035
+        self.k = 0.0625
+        self.D_u = 0.01
+        self.D_v = 0.005
+        
+        self.U_concentrations = np.ones((width,height),dtype=float)
         xx, yy = np.meshgrid(np.arange(width), np.arange(height))
+        # dot_mask = (xx-width/2)**2 +(yy-height/2)**2 < 8**2
+        dot_mask = np.logical_or(
+            (xx>20)*(xx < 30)*(yy>20)*(yy<30),
+            (xx>5)*(xx < 15)*(yy>5)*(yy<15)
+        )
+        self.U_concentrations[dot_mask]=0.5
         
-        self.P_concentrations = 0.5*(1 + np.sin(xx * ( 2 * np.pi)/8))
-        # for i in range(50):
-        #     dot_x = random.randint(0,width)
-        #     dot_y = random.randint(0,height)
-        # # for i in range(10):
-        # #     # dot_x = random.randint(0,width)
-        # #     # for dot_x in [10,20,34,40,50,60]:
-        # #     for j in range(10):
-        # #         dot_y = random.randint(0,height)
-        #     # for dot_y in [10,21,30,40,50,60]:
-            
-        #     dot_mask = ( (xx - dot_x)**2 + (yy - dot_y)**2 ) < dot_rad**2
-        #     self.P_concentrations[dot_mask] = 0.9
+        self.V_concentrations = np.zeros((width, height))
+        self.V_concentrations[dot_mask]=0.2
+        
+        self.make_diffusion_kernel()
         
         
-        self.S_concentrations = np.zeros( (width, height), dtype=float)
+    
+    def make_diffusion_kernel(self):
+        
+        raw_kernel = np.array([
+            [0,1,0],
+            [1,-4,1],
+            [0,1,0],
+        ],dtype=float)
         
         
-        # Contribution per timestep to neighbor concentrations.
-        # Scaling these linearly is equivalent to scaling the timestep, so we add speed_factor
-        speed_factor = 0.005
-        self.P_diffuse_constant = 0.05 * speed_factor
-        self.S_diffuse_constant = 0.025 * speed_factor
+        self.diff_kernel = raw_kernel
         
         
-        self.P_self_promo_factor = 0.9 * speed_factor
-        self.P_inhibition_by_S_factor = 0.1#0.8 * speed_factor
-        
-        self.S_promotion_by_P_factor = 0.05# 0.8 * speed_factor       
-        self.S_self_inhibition_factor = 0.8 * speed_factor
-        
-        # self.max 
     
     def do_timestep(self):
         # Calculate contribution from diffusion - using a rough convolution that would conserve mass,
         # but is not necessarily accurate.
         
-        P_k_adj = self.P_diffuse_constant / 4
-        P_kernel = np.array([
-            [0,          P_k_adj,                  0],
-            [P_k_adj, - self.P_diffuse_constant, P_k_adj],
-            [0,          P_k_adj,                  0],
-        ])
+        Del_sq_U = scipy.signal.convolve2d(self.U_concentrations, self.diff_kernel, mode='same')
+        # U_diffuse_contribution = self.D_u * Del_sq_U
         
-        S_k_adj = self.S_diffuse_constant / 4
-        S_kernel = np.array([
-            [0,          S_k_adj,                  0],
-            [S_k_adj, - self.P_diffuse_constant, S_k_adj],
-            [0,          S_k_adj,                  0],
-        ])
+        Del_sq_V = scipy.signal.convolve2d(self.V_concentrations, self.diff_kernel, mode='same')
+        # V_diffuse_contribution = self.D_v * Del_sq_V
+        U_diffusion_rate = self.D_u * Del_sq_U
+        V_diffusion_rate = self.D_v * Del_sq_V
+        self.U_concentrations += U_diffusion_rate
+        self.V_concentrations += V_diffusion_rate
         
-        P_diffuse_contribution = scipy.signal.convolve2d(self.P_concentrations, P_kernel, mode='same')
-        S_diffuse_contribution = scipy.signal.convolve2d(self.S_concentrations, S_kernel, mode='same')
+        U_eaten_rate = (self.U_concentrations * (self.V_concentrations ** 2))
+        U_growing_rate = self.F * (1 - self.U_concentrations)
+        U_rateofchange = (
+            - U_eaten_rate +
+            U_growing_rate
+        )
+        # print("total u eaten: ", np.sum(U_eaten_rate))
+        # print("total u growth promotion factor: ", np.sum(U_growing_rate))
+        # print("total u diffusion rate", np.sum(U_diffusion_rate))
         
-        print("Total P diffuse contribution: ", np.sum(P_diffuse_contribution))
-        print("Total S diffuse contribution; ", np.sum(S_diffuse_contribution))
+        V_rateofchange = (
+            self.U_concentrations * (self.V_concentrations ** 2) +
+            (- (self.F + self.k) * self.V_concentrations)
+        )
         
-        P_self_promotion_contribution = self.P_self_promo_factor * self.P_concentrations
-        P_inhibition_contribution = - self.P_inhibition_by_S_factor *  self.S_concentrations
-        print("Total P self promotion", np.sum(P_self_promotion_contribution))
-        print('Total P inhibition from S', np.sum(P_inhibition_contribution))
-        # print("")
+        self.U_concentrations += U_rateofchange * self.timestep
+        self.V_concentrations += V_rateofchange * self.timestep
         
-        S_promotion_from_P = self.S_promotion_by_P_factor * self.P_concentrations
-        # print("")
-        S_self_inhibition = - self.S_self_inhibition_factor * self.S_concentrations
-        # S has no self promotion factor
+        # Concentrations are limited to be within 0 and 1
+        self.U_concentrations[self.U_concentrations < 0] = 0.0
+        self.V_concentrations[self.V_concentrations < 0] = 0.0
         
-        self.P_concentrations += (P_diffuse_contribution + P_self_promotion_contribution + P_inhibition_contribution)
-        self.S_concentrations += (S_diffuse_contribution + S_promotion_from_P + S_self_inhibition)
-        
-        # Concentrations must be between 0 and 1
-        self.P_concentrations[self.P_concentrations < 0.0] = 0.0
-        self.S_concentrations[self.S_concentrations < 0.0] = 0.0
-        
-        self.P_concentrations[self.P_concentrations > 1.0] = 1.0
-        self.S_concentrations[self.S_concentrations > 1.0] = 1.0
+        self.U_concentrations[self.U_concentrations > 1] = 1.0
+        self.V_concentrations[self.V_concentrations > 1] = 1.0
 
 def start_simulation():
     w = TileWorld()
     
-    # fig, ax = plt.subplots()
     # plt.show
     fig, (ax0, ax1) = plt.subplots(1,2)
-    P_image = ax0.imshow(w.P_concentrations, vmin=0, vmax=1)
-    S_image = ax1.imshow(w.S_concentrations, vmin=0, vmax=1)
-    # ax9.imshow(w.)
+    P_image = ax0.imshow(w.U_concentrations, cmap = plt.get_cmap('gray'), vmin=0, vmax=1)
+    plt.colorbar(P_image)
+    S_image = ax1.imshow(w.V_concentrations, cmap = plt.get_cmap('gray'),vmin=0, vmax=1)
+    plt.colorbar(S_image)
+    ax0.set_title("U")
+    ax1.set_title("V")
+    
+    idx=0
     while True:
-        P_image.set_data(w.P_concentrations)
-        S_image.set_data(w.S_concentrations)
+        P_image.set_data(w.U_concentrations)
+        S_image.set_data(w.V_concentrations)
         # plt.clf()
         fig.canvas.flush_events()
         # print("Pausing...")
-        plt.pause(0.05)
+        plt.pause(0.001)
         # time.sleep(1)
         # key = cv2.waitKey(1)#pauses for 3 seconds before fetching next image
         # if key == 27:#if ESC is pressed, exit loop
         #     cv2.destroyAllWindows()
         #     break
-        for x in range(5):
+        for x in range(200):
+            idx+=1
             w.do_timestep()
         # cv2.waitKey()
     
